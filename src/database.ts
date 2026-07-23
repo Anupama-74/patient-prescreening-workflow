@@ -50,11 +50,17 @@ export class Database implements OnModuleInit, OnModuleDestroy {
       );
 
       CREATE TABLE IF NOT EXISTS processed_events (
-        event_id text PRIMARY KEY,
+        event_id text NOT NULL,
         workflow_id uuid NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
         step text NOT NULL,
         processed_at timestamptz NOT NULL DEFAULT now()
       );
+
+      ALTER TABLE processed_events
+        DROP CONSTRAINT IF EXISTS processed_events_pkey;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS processed_events_workflow_event_idx
+        ON processed_events(workflow_id, event_id);
 
       CREATE INDEX IF NOT EXISTS processed_events_workflow_id_idx
         ON processed_events(workflow_id);

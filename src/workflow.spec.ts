@@ -37,6 +37,14 @@ describe('workflow adversarial behavior', () => {
     return response.body.workflowId;
   }
 
+  async function createWorkflowFor(patientId: string, age = 42): Promise<string> {
+    const response = await request(app.getHttpServer())
+      .post('/workflows')
+      .send({ patientId, age })
+      .expect(201);
+    return response.body.workflowId;
+  }
+
   function accepted(id: string, eventId: string, step: string) {
     return request(app.getHttpServer()).post(`/workflows/${id}/events`).send({ eventId, step });
   }
@@ -47,14 +55,23 @@ describe('workflow adversarial behavior', () => {
 
   it('rejects duplicate patient workflows', async () => {
     await boot();
-    await request(app.getHttpServer())
-      .post('/workflows')
-      .send({ patientId: 'same-patient', age: 30 })
-      .expect(201);
+    await createWorkflowFor('same-patient', 30);
     await request(app.getHttpServer())
       .post('/workflows')
       .send({ patientId: 'same-patient', age: 30 })
       .expect(409);
+  });
+
+  it('allows a new workflow for the same patient after a terminal state', async () => {
+    await boot();
+    const firstId = await createWorkflowFor('repeat-patient', 30);
+    await accepted(firstId, 'r1', 'CONTACT_VERIFIED').expect(202);
+    await accepted(firstId, 'r2', 'CONSENT_CAPTURED').expect(202);
+    await accepted(firstId, 'r3', 'ELIGIBILITY_COMPLETED').expect(202);
+    await accepted(firstId, 'r4', 'APPOINTMENT_BOOKED').expect(202);
+
+    const secondId = await createWorkflowFor('repeat-patient', 31);
+    expect(secondId).not.toBe(firstId);
   });
 
   it('handles duplicate event delivery as an idempotent no-op', async () => {
@@ -67,6 +84,20 @@ describe('workflow adversarial behavior', () => {
     const state = await request(app.getHttpServer()).get(`/workflows/${id}`).expect(200);
     expect(state.body.completedSteps).toEqual(['CONTACT_VERIFIED']);
     expect(state.body.unlockedStep).toBe('CONSENT_CAPTURED');
+  });
+
+  it('scopes duplicate event IDs to the workflow', async () => {
+    await boot();
+    const firstId = await createWorkflow();
+    const secondId = await createWorkflow();
+
+    await accepted(firstId, 'same-event-id', 'CONTACT_VERIFIED').expect(202);
+    await accepted(secondId, 'same-event-id', 'CONTACT_VERIFIED').expect(202);
+
+    const firstState = await request(app.getHttpServer()).get(`/workflows/${firstId}`).expect(200);
+    const secondState = await request(app.getHttpServer()).get(`/workflows/${secondId}`).expect(200);
+    expect(firstState.body.completedSteps).toEqual(['CONTACT_VERIFIED']);
+    expect(secondState.body.completedSteps).toEqual(['CONTACT_VERIFIED']);
   });
 
   it('rejects out-of-order steps', async () => {
@@ -106,6 +137,9 @@ describe('workflow adversarial behavior', () => {
     const state = await request(app.getHttpServer()).get(`/workflows/${id}`).expect(200);
     expect(state.body.status).toBe('VERIFICATION_FAILED');
     expect(state.body.completedSteps).toEqual([]);
+
+    await accepted(id, 'evt-contact-fails', 'CONTACT_VERIFIED').expect(200);
+    await accepted(id, 'evt-new-after-fail', 'CONTACT_VERIFIED').expect(409);
   });
 
   it('completes the happy path and blocks ineligible appointment booking', async () => {
@@ -119,6 +153,8 @@ describe('workflow adversarial behavior', () => {
     expect(complete.body.status).toBe('COMPLETED');
     expect(complete.body.eligibility).toBe('ELIGIBLE');
     expect(complete.body.unlockedStep).toBeNull();
+    await accepted(eligibleId, 'c4', 'APPOINTMENT_BOOKED').expect(200);
+    await accepted(eligibleId, 'c5', 'APPOINTMENT_BOOKED').expect(409);
 
     const ineligibleId = await createWorkflow(80);
     await accepted(ineligibleId, 'i1', 'CONTACT_VERIFIED').expect(202);
@@ -128,7 +164,6 @@ describe('workflow adversarial behavior', () => {
   });
 
   it('converges after a crash before the processed-event insert', async () => {
-    console.log('Simulating a crash after workflow update but before processed-event insert');
     await boot();
     const id = await createWorkflow();
 

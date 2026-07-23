@@ -64,8 +64,8 @@ export class WorkflowService {
       if (!workflow) throw new HttpProblem(404, 'workflow not found');
 
       const duplicate = await client.query(
-        'SELECT 1 FROM processed_events WHERE event_id = $1',
-        [eventId],
+        'SELECT 1 FROM processed_events WHERE workflow_id = $1 AND event_id = $2',
+        [workflow.id, eventId],
       );
       if (duplicate.rowCount) return { code: 200 };
 
@@ -159,8 +159,6 @@ export class WorkflowService {
       });
       return true;
     } catch (error) {
-      console.log('MY LOG BEFORE OPERATOR ALERT');
-
       console.error(
         JSON.stringify({
           event: 'operator_alert',
